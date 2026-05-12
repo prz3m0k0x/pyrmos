@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.optimize as optimize
+import scipy.integrate as integrate
 import matplotlib.pyplot as plt
 from dataclasses import dataclass, field
 from dataclasses import dataclass, field
@@ -9,8 +10,8 @@ from typing import ClassVar, Dict, List
 
 PI = 3.141592653589793
 UNIVERSALGASCONSTANT = 8.31446261815324
-REFERENCE_TEMPERATURE = 273.15
-PRESSURE = 101325.0 #Pa
+T_REF = 273.15
+P_REF = 101325.0 #Pa
 
 @dataclass
 class Specie:
@@ -30,6 +31,17 @@ class Specie:
         type(self).counter += 1
         if self.heatCapacityModel == "polynomial":
             self.heatCapacityValue = np.poly1d(self.heatCapacityCoefficients) #np polynomial object, function of some value (in this case T)
+    def enthalpy(self, T):
+        T = np.asarray(T, dtype=float)
+        if self.heatCapacityModel == "const":
+
+            cp_const = self.heatCapacityValue
+            return cp_const * (T - T_REF)
+
+        else:  # polynomial cp(T)
+            cp_poly = self.heatCapacityValue  # np.poly1d
+            H_poly = cp_poly.integ()          # antiderivative polynomial
+            return H_poly(T) - H_poly(T_REF)
 
 @dataclass
 class Reaction:
@@ -39,10 +51,12 @@ class Reaction:
     stochiometricCoefficients: np.ndarray = field(default_factory=list)
     speciesID: np.ndarray = field(default_factory=list)
     speciesExponent: np.ndarray = field(default_factory=list)
+    reversedSpecieExponent : np.ndarray = field(default_factory=list)
     isReversible: bool = True
     ahrreniusPreExponent: float = 1.0
     ahrreniusActivationEnergy: float = 0.0  # J/mol
     species_registry: Dict[int, "Specie"] = field(default_factory=dict, repr=False)
+    
 
     entropyChange: float = field(init=False)   # J/mol/K
     enthalpyChange: float = field(init=False)  # J/mol
@@ -80,7 +94,18 @@ class Reaction:
         K_eq = self.equilibrium_constant(T)
         return k_f / K_eq
     
+    def enthalpyReactionChange(self, T : np.ndarray) -> np.ndarray:
+        T =np.asarray(T, dtype= float)
+        Hr_T = np.zeros_like(T)
 
+        for nu_i, sid in zip(self.stochiometricCoefficients, self.speciesID):
+            sp = self.species_registry[sid]
+            dH_i = sp.enthalpy(T)                           # H(T) - H(T_ref)
+            H_i_T = sp.enthalpyFormation + dH_i                     # full H_i(T)
+            Hr_T += nu_i * H_i_T
+
+        return Hr_T
+    
 @dataclass
 class Mixture:
     densityModel : str = "const" #can also be ideal-incompressible-gas
@@ -94,7 +119,7 @@ class Mixture:
         pass
 
     def __post_init__(self):
-        
+        pass
         # if self.densityModel == "ideal-incompressible-gas":
 
 
@@ -103,8 +128,7 @@ class Mixture:
 class domainSetup:
     diameter: float
     massFlowRate : float
-    inletMassFractions : np.ndarry = field(default_factory=list) 
-
+    inletMassFractions : np.ndarray = field(default_factory=list) 
 
 
 @dataclass 
@@ -130,7 +154,6 @@ class Zone:
     type: str = "null"   # "cooling", "reaction", "null"
     heatSource: float = 0.0  # W/m3
     massSource: List[str] = field(default_factory=list)
-    reaction : list[int] = field(default_factory=list)
 
     def __post_init__(self):
         type(self).counter += 1
@@ -139,19 +162,21 @@ class Zone:
 
 @dataclass 
 class Mesh:
+    domain : domainSetup
     sizing: float = 0.005  # m
     bias: str = "soft"
     meshZones: List[Zone] = field(default_factory=list)
+    
 
     # numpy arrays created in __post_init__
     cell_centers: np.ndarray = field(init=False, repr=False)
     cell_sizes:   np.ndarray = field(init=False, repr=False)
     cell_zone_id: np.ndarray = field(init=False, repr=False)
     cell_zone_type: np.ndarray = field(init=False, repr=False)
-    cellZoneReaction : np.ndarray = field(init=False, repr=False) 
+    heatSource : np.ndarray = field(init=False, repr=False) 
     lenght: float = field(init=False, default=0.0)
 
-    def __post_init__(self, domain : domainSetup):
+    def __post_init__(self):
 
         zones = [z for z in self.meshZones if z.lenght > 0.0]
         if not zones:
@@ -161,8 +186,7 @@ class Mesh:
             self.cell_volumes = np.array([], dtype=float)
             self.cell_zone_id = np.array([], dtype=int)
             self.cell_zone_type = np.array([], dtype=object)
-            self.cellZoneReaction = np.array([], dtype=int)
-            self.heatSource = np.array([], dtype=int)
+            self.heatSource = np.array([], dtype=float)
             self.lenght = 0.0
             return
 
@@ -182,8 +206,7 @@ class Mesh:
         self.cell_volumes = np.empty(n_total, dtype=float)
         self.cell_zone_id = np.empty(n_total, dtype=int)
         self.cell_zone_type = np.empty(n_total, dtype=object)
-        self.cellZoneReaction = np.empty(n_total, dtype=int)
-        self.heatSource = np.empty(n_total, dtype=int)
+        self.heatSource = np.empty(n_total, dtype=float)
 
         z_starts = np.concatenate(([0.0], np.cumsum(Lz[:-1])))
 
@@ -200,27 +223,16 @@ class Mesh:
             k = np.arange(nc, dtype=float)
             self.cell_centers[idx] = z0 + (k + 0.5) * dz_i
             self.cell_sizes[idx]   = dz_i
-            self.cell_volumes = self.cell_sizes * (domain.diameter** PI) / 4
+            area = (self.domain.diameter**2) * PI / 4.0
+            self.cell_volumes[idx] = self.cell_sizes[idx] * area
             self.cell_zone_id[idx] = z.id
             self.cell_zone_type[idx] = z.type
-            self.cellZoneReaction[idx] = np.array[z.reaction]
             self.heatSource[idx] = z.heatSource
-
             start += nc
 
+        self.n_cells = n_total
         self.lenght = float(z_starts[-1] + Lz[-1])  # total length
-
-zones = [
-    Zone(lenght=0.10, type="reaction"),
-    Zone(lenght=0.05, type="cooling"),
-    Zone(lenght=0.10, type="reaction"),
-]
-
-mesh = Mesh(sizing=0.005, meshZones=zones)
-
-print(len(mesh.cell_centers))  # total number of cells
-print(mesh.cell_zone_type[:10])  # zone types per cell
-
+        
 class scalarField:
     def __init__(self, variable: str, Mesh: Mesh, type: str = "specie"):
         self.variable = variable
@@ -229,73 +241,89 @@ class scalarField:
         self.volumetricSources = np.zeros((1, Mesh.n_cells))
     
 class globalMatrix:
-    def __init__(self, Mixture: Mixture, Mesh: Mesh):
-        self.area = (domainSetup.diameter**2 * PI / 4)
-        self.density = Mixture.densityValue
-        self.velocity = domainSetup.massFlowRate / (self.density * self.area)
-        self.massFlux = domainSetup.massFlowRate  # F = m_dot
+    def __init__(self, domain: domainSetup, mixture: Mixture, Mesh: Mesh):
+        self.area = (domain.diameter**2) * PI / 4.0
+        self.density = mixture.densityValue
+        self.velocity = domain.massFlowRate / (self.density * self.area)
+        self.massFlux = domain.massFlowRate
         self.cellVolume = Mesh.cell_volumes
         self.n_cells = Mesh.n_cells
     
-def assemble_sources(Mesh: Mesh,
-                     mixture: Mixture,
-                     species_list: list[Specie],
-                     reactions: dict[int, Reaction],
-                     T: np.ndarray,
-                     Y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def assembleSources(Mesh: Mesh,
+                    mixture: Mixture,
+                    species_list: list[Specie],
+                    reaction: Reaction,
+                    T: np.ndarray,
+                    Y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     Mesh: mesh object with cell_zone_type, cellZoneReaction
     mixture: gives density, etc.
-    species_list: indexed by specie.id
-    reactions: dict {reaction_id: Reaction}
-    T: (n_cells,) temperature field
+    species_list: list of all species, index == species.id
+    reaction: single Reaction active in all 'reaction' cells
+    T: (n_cells,) temperature field [K]
     Y: (n_species, n_cells) mass fractions
 
     returns:
         S_mass: (n_species, n_cells)  # kg/(m^3 s)
-        q_rxn: (n_cells,)             # J/(m^3 s)
+        S_q:    (n_cells,)            # J/(m^3 s)
     """
+
     rho = mixture.densityValue
     n_species, n_cells = Y.shape
-    S_mass = np.zeros((n_species, n_cells))
-    q_rxn = np.zeros(n_cells)
 
-    M = np.array([sp.molarMass for sp in species_list])
+    # outputs
+    S_mass = np.zeros_like(Y, dtype=float)
+    S_q = np.zeros(n_cells, dtype=float)
+    # masks
+    reaction_mask = (Mesh.cell_zone_type == "reaction")   # (n_cells,)
+    cooling_mask = (Mesh.cell_zone_type == "cooling")   # for later
 
-    reaction_cells = np.argwhere(Mesh.cell_zone_type == "reaction")
-    
-    for j in range(n_cells):
-        if Mesh.cell_zone_type[j] != "reaction":
-            continue
+    S_q_cooling = np.zeros(n_cells, dtype=float)
+    S_q_cooling[cooling_mask] = np.asarray(Mesh.heatSource)[cooling_mask]
 
-        r_id = Mesh.cellZoneReaction[j]
-        rxn = reactions[r_id]
+    # if no reaction cells, just return zeros
+    if not np.any(reaction_mask):
+        return S_mass, S_q + S_q_cooling
 
-        # Build concentrations C_i at this cell
-        C_local = np.zeros(len(rxn.speciesID))
-        for idx, s_id in enumerate(rxn.speciesID):
-            s = s_id  # assuming s_id matches index in species_list/Y
-            Y_sj = Y[s, j]
-            C_local[idx] = rho * Y_sj / M[s]  # mol/m^3
+    # species molar masses (assume index == specie.id)
+    M = np.array([sp.molarMass for sp in species_list], dtype=float)  # (n_species,)
 
-        Tj = T[j]
+    # indices of species participating in this reaction
+    species_idx = np.array(reaction.speciesID, dtype=int)            # (n_rxn_species,)
+    M_rxn = M[species_idx]                                           # (n_rxn_species,)
 
-        # rate law (for now: irreversible, mass-action)
-        k_f = rxn.forward_rate_constant(Tj)
-        # product over reactants/products depending on rxn.speciesExponent
-        rate_factor = np.prod(C_local ** rxn.speciesExponent)
-        r_j = k_f * rate_factor  # mol/(m^3 s)
+    # restrict T and Y to reaction cells
+    T_masked = T[reaction_mask]                                      # (n_reac_cells,)
+    Y_rxn = Y[species_idx, :][:, reaction_mask]                      # (n_rxn_species, n_reac_cells)
 
-        # species sources
-        for idx, s_id in enumerate(rxn.speciesID):
-            s = s_id
-            nu_i = rxn.stochiometricCoefficients[idx]  # mol stoich
-            S_mass[s, j] += nu_i * r_j * M[s]  # kg/(m^3 s)
+    # concentrations C_i = rho * Y_i / M_i [mol/m^3]
+    C_rxn = rho * Y_rxn / M_rxn[:, np.newaxis]                       # (n_rxn_species, n_reac_cells)
 
-        # reaction heat source
-        q_rxn[j] += -rxn.enthalpyChange * r_j  # J/(m^3 s)
+    # Arrhenius rate constants only in reaction cells
+    k_f_masked = reaction.forward_rate_constant(T_masked)            # (n_reac_cells,)
+    k_r_masked = reaction.backward_rate_constant(T_masked)           # (n_reac_cells,)
 
-    return S_mass, q_rxn
+    # exponents aligned with species_idx
+    alpha = np.asarray(reaction.speciesExponent, dtype=float)[:, np.newaxis]  # (n_rxn_species, 1)
 
-def solveEquation(A : np.ndarray, b : np.ndarray):
-    return scipy.linalg.solve(a= A, b= b, assume_a= 'triadiagonal')
+    beta = np.asarray(reaction.reversedSpecieExponent, dtype=float)[:, np.newaxis]
+
+    # forward and backward rates [mol/(m^3 s)]
+    rate_forward_masked = k_f_masked * np.prod(C_rxn ** alpha, axis=0)  # (n_reac_cells,)
+    # for now, assume irreversible; if reversible, uncomment and use:
+    rate_backward_masked = k_r_masked * np.prod(C_rxn ** beta, axis=0)
+    rate_masked = rate_forward_masked - rate_backward_masked
+
+
+    rate = np.zeros(n_cells, dtype=float)
+    rate[reaction_mask] = rate_masked
+
+    # species mass sources: S_i = nu_i * rate * M_i  [kg/(m^3 s)]
+    for loc, s_id in enumerate(species_idx):
+        nu_i = reaction.stochiometricCoefficients[loc]
+        S_mass[s_id, reaction_mask] += nu_i * rate_masked * M[s_id]
+
+    Hr_T = reaction.enthalpyReactionChange(T)                        # (n_cells,), J/mol
+    S_q[reaction_mask] = -Hr_T[reaction_mask] * rate_masked          # J/(m^3 s)
+
+    return S_mass, S_q + S_q_cooling
