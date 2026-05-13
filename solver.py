@@ -31,6 +31,15 @@ class Specie:
         type(self).counter += 1
         if self.heatCapacityModel == "polynomial":
             self.heatCapacityValue = np.poly1d(self.heatCapacityCoefficients) #np polynomial object, function of some value (in this case T)
+        
+    def heatCapacity(self, T : np.ndarray):
+
+        if self.heatCapacityModel == "const":
+            return self.heatCapacityValue
+        else:
+            cp_poly = self.heatCapacityValue
+            return cp_poly(T)
+        
     def enthalpy(self, T):
         T = np.asarray(T, dtype=float)
         if self.heatCapacityModel == "const":
@@ -133,8 +142,7 @@ class Reaction:
         rateForward, rateBackward = rates
         enthalpy = self.enthalpyReactionChange(T= T)
         return (rateForward - rateBackward) * enthalpy
-    
-@dataclass
+
 @dataclass
 class Mixture:
     densityModel: str = "ideal-incompressible-gas"   # or "const"
@@ -167,6 +175,9 @@ class Mixture:
         M_mix = self.equivalentMolarMass(speciesFractions)      # (n_cells,)
         rho = P_REF * M_mix / (UNIVERSALGASCONSTANT * T)        # p M / (R T)
         return rho
+    
+    def mixtureHeatCapacity(self, T: np.ndarray, speciesFractions: np.ndarray)-> np.ndarray:
+        return np.sum(speciesFractions * np.stack([sp.heatCapacity(T) for sp in self.species]), axis= 0)
 
 @dataclass
 class domainSetup:
@@ -181,13 +192,15 @@ class Inlet:
     temperature : float = 700
     speciesMassFractions: List[float] = field(default_factory=list)
 
-    def inletValues(self):
+    def inletValues(self, mixture : Mixture, domain : domainSetup):
         """Returns list of np.arrays with with variables:
         massFlowrate, temperature, speciesMassFractions"""
+        density = mixture.idealGasDensity(T= np.asarray(T), speciesFractions= np.asarray(self.speciesMassFractions))
         temperatureBC = np.array([self.temperature])
         velocityBC = np.array([self.velocity])
-        specieFlowrateBC = np.array([self.speciesMassFractions])
-        return velocityBC, temperatureBC, specieFlowrateBC
+        massFlowrate = density * (domain.diameter ** 2)/4 * PI * velocityBC
+        specieFractionsBC = np.array([self.speciesMassFractions])
+        return massFlowrate, temperatureBC, specieFractionsBC
     
 # @dataclass
 # class BoundaryConditions:
@@ -311,22 +324,22 @@ class scalarField:
         self.volumetricSources = np.zeros((mesh.n_cells))
 
 class solver:
-    def __init__(self, mesh: Mesh, mixture: Mixture, reaction: Reaction, specieFields: List[scalarField]):
+    def __init__(self, mesh: Mesh, mixture: Mixture, reaction: Reaction, specieFields: List[scalarField], inlet : Inlet):
         self.mesh = mesh
         self.mixture = mixture
         self.reaction = reaction
         self.density = np.full(mesh.n_cells, self.mixture.densityValue, dtype=float)
-        self.massFlux = np.full(mesh.n_cells, self.mesh.domain.massFlowRate, dtype=float)
-        # stack species fields into array (n_species, n_cells)
-        # assuming each field.cellField is shape (1, n_cells)
-        self.specieFields = np.vstack([f.cellField for f in specieFields])  # (n_species, n_cells)
-        
+        self.inlet = inlet
+        self.massFlux = np.full(mesh.n_cells, self.inlet.inletValues(self.mixture, domain= self.mesh.domain)[0], dtype=float)
 
+        self.specieFields = np.vstack([f.cellField for f in specieFields])  # (n_species, n_cells)
         self.temperatureField = scalarField("temperature", "temperature").fieldInitialize(mesh= mesh)
         self.velocityField = scalarField("velocity", "velocity").fieldInitialize(mesh= mesh)
         
         self.massSources = np.zeros_like(self.specieFields)                 # (n_species, n_cells)
         self.heatSources = np.zeros_like(self.temperatureField)             # (n_cells,)
+        self.heatResidual = np.zeros_like(self.specieFields)
+        self.specieResidual = np.zeros_like(self.temperatureField)
 
         self.reactionRates = np.zeros((2, mesh.n_cells), dtype=float)       # row 0: forward, row 1: backward
 
@@ -365,11 +378,51 @@ class solver:
         print("self.massSources shape:", self.massSources.shape)
         print("massSources_all shape:", massSources_all.shape)
         print("reactionMask shape:", reactionMask.shape)
+    
+    def matrixSpecieEquationAssembly(self, specieIndex : int):
+        A = (-1 * np.diag(np.ones(self.mesh.n_cells-1), -1) + np.identity(self.mesh.n_cells)) * self.massFlux[0]
+        b = self.massSources[specieIndex, :] * self.mesh.cell_volumes
+        A[0,:] = 0.0
+        A[0,0] = 1.0
+        b[0] = self.inlet.speciesMassFractions[specieIndex]
+        return A, b
+    
+    def matrixTemperatureEquationAssembly(self):
+        n = self.mesh.n_cells
+        F = float(self.massFlux[0])
+        cp_mix = self.mixture.mixtureHeatCapacity(self.temperatureField, self.specieFields)  # shape (n,)
+        Q = self.heatSources                      # shape (n,)
+        V = self.mesh.cell_volumes               # shape (n,)
+
+        A = np.zeros((n, n), dtype=float)
+        A += np.diag(F * cp_mix)
+        A += np.diag(-F * cp_mix[1:], k=-1)
+        A[0, :] = 0.0
+        A[0, 0] = 1.0
+
+        b = np.zeros(n, dtype=float)
+        b[0] = self.inlet.temperature
+        b[1:] = -Q[1:] * V[1:]
+
+        return A, b
+
 
     def specieScalarEquation(self):
-        
-        
-        
+        self.specieResidual = self.massFlux * (self.specieFields[:, 1:] - self.specieFields[:, :-1]) + self.massSources[:, 1:] * self.mesh.cell_volumes[1:] 
+    
+    def heatEquation(self):
+        self.heatResidual = self.massFlux * self.mixture.mixtureHeatCapacity(self.temperatureField, self.specieFields)[1:] * (self.temperatureField[1:] - self.temperatureField[:-1]) + self.heatSources[1:] * self.mesh.cell_volumes[1:]
+    
+    def initializeCase(self):
+        inletMassFlowrate, inletTemperature, inletSpecies = self.inlet.inletValues(self.mixture, self.mesh.domain)
+        self.specieFields = inletSpecies[:, np.newaxis]
+        self.temperatureField = inletTemperature[:, np.newaxis]
+
+    def steadyState(self, max_iter : int, relaxationFactorSpecie : float, relaxationFactorTemperature : float, convergenceCriteria : float):
+        self.update_density()
+        self.sourcesEvaluation()
+        scipy.linalg.solve()
+
 if __name__ == "__main__":
     # Polynomial cp: cp(T) = a*T^2 + b*T + c  [J/mol/K]
     # Just pick simple coefficients for A and B
