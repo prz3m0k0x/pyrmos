@@ -1,0 +1,139 @@
+mesh:
+  nZones: 3
+  zones: &id001
+    zone0:
+      length: 1.0
+      heatSource: false
+      massSource: true
+      heatSourceValue: null
+    zone1:
+      length: 1.0
+      heatSource: true
+      massSource: false
+      heatSourceValue: -50000.0
+    zone2:
+      length: 1.0
+      heatSource: false
+      massSource: true
+      heatSourceValue: null
+  mesh:
+    sizing: 0.005
+inlet:
+  diameter: 2.5
+  velocity: 0.5
+  temperature: 690
+  specie:
+    so2: 0.1
+    so3: 0.0
+    o2: 0.09000000000000001
+    n2: 0.81
+solver:
+  scaledResidual: 1e-6
+  reactionMassSource:
+    relativeTolerance: 1e-5
+    absoluteTolerance: 1e-12
+  reactionHeatSource:
+    relativeTolerance: 1e-5
+    absoluteTolerance: 1e-9
+  reactionHeatSourceDerivative:
+    relativeTolerance: 1e-4
+    absoluteTolerance: 1e-9
+  underRelaxationFactors:
+    species: 0.4
+    temperature: 0.3
+    heatSource: 0.1
+    massSource: 0.1
+  temperatureClipLow: 200
+  temperatureClipHigh: 2000
+chemistry:
+  nSpecies: 4
+  species: &id002
+    so2:
+      molarMass: 0.64
+      heatCapacityModel: polynomial
+      enthalpyFormation: -296861.22
+      entropyFormation: 248.1
+      heatCapacityCoefficients:
+      - 3.53
+    o2:
+      molarMass: 0.32
+      heatCapacityModel: polynomial
+      enthalpyFormation: 0.0
+      entropyFormation: 205.0
+      heatCapacityCoefficients:
+      - 3.53
+    n2:
+      molarMass: 0.28
+      heatCapacityModel: polynomial
+      enthalpyFormation: 0.0
+      entropyFormation: 191.0
+      heatCapacityCoefficients:
+      - 3.53
+    so3:
+      molarMass: 0.8
+      heatCapacityModel: polynomial
+      enthalpyFormation: -395782.3
+      entropyFormation: 256.6
+      heatCapacityCoefficients:
+      - 3.53
+  reactions: &id003
+  - name: so2_conversion
+    isReversible: 1
+    ahrreniusPreExponent: 50e9
+    ahrreniusActivationEnergy: 165000.0
+  - name: so2_conversion
+    stochiometricCoefficients:
+    - -1.0
+    - -0.5
+    - 0.0
+    - 1.0
+    speciesExponent:
+    - 1.0
+    - 0.5
+    - 0.0
+    - 0.0
+    reversedSpecieExponent:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+  mixture:
+    densityModel: ideal-incompressible-gas
+    densityValue: null
+pso:
+  study:
+    name: so2_reactor_pso
+  model:
+    module: reactor_problem
+    function: run_case
+  parameters:
+  - name: inlet_so2_mass_fraction
+    key: inlet.Yso2
+    bounds:
+    - 0.1
+    - 0.2
+  - name: inlet_temperature
+    key: inlet.temperature
+    bounds:
+    - 600.0
+    - 800.0
+  outputs:
+  - name: so2_conversion
+    key: -10000.0
+    goal: maximize
+  pso:
+    hfactor: 25
+    maxiter: 15
+    tneighbors: 3
+    winit: 0.7
+    wfinish: 0.4
+    c1init: 0.6
+    c1finish: 0.8
+    c2init: 0.5
+    c2finish: 0.6
+    vmaxfactor: 0.2
+  constraints:
+    linear: []
+zones: *id001
+species: *id002
+reactions: *id003

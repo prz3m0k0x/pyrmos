@@ -1,0 +1,2 @@
+expr3: "(inlet.specie.so2 - outlet.specie.so2) / inlet.specie.so2"
+expr4: "inlet.temperature - outlet.temperature"

@@ -1,0 +1,35 @@
+---
+study:
+  name: so2_reactor_pso
+
+model:
+  module: reactor_problem
+  function: run_case
+
+parameters:
+  - name: inlet_so2_mass_fraction
+    key: inlet.specie.so2
+    bounds: [0.10, 0.20]
+
+  - name: inlet_temperature
+    key: inlet.temperature
+    bounds: [600.0, 800.0]
+outputs:
+  - name: so2_conversion
+    key: expr3
+    goal: maximize
+
+pso:
+  hfactor: 25
+  maxiter: 15
+  tneighbors: 3
+  winit: 0.7
+  wfinish: 0.4
+  c1init: 0.6
+  c1finish: 0.8
+  c2init: 0.5
+  c2finish: 0.6
+  vmaxfactor: 0.2
+
+constraints:
+  linear: []

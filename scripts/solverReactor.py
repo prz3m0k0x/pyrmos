@@ -1,10 +1,7 @@
 import numpy as np
-import scipy.optimize as optimize
-import scipy.integrate as integrate
 import matplotlib.pyplot as plt
 from dataclasses import dataclass, field
 from dataclasses import dataclass, field
-import scipy.linalg
 from typing import ClassVar, Dict, List
 from scipy.sparse import diags
 from scipy.sparse.linalg import spsolve
@@ -683,7 +680,6 @@ class Reaction:
 
         return dRf_dCj, dRb_dCj
         
-    
 @dataclass
 class Mixture:
 
@@ -963,9 +959,11 @@ class Inlet:
         Y_in_2d = Y_in.reshape(-1, 1)                                     # (n_species, 1)
         
         T_array = np.array([float(self.temperature)], dtype=float)        # (1,)
-
-        density = mixture.idealGasDensity(T=T_array,
-                                        speciesFractions=Y_in_2d)         # rho: (1,)
+        if mixture.densityModel == "ideal-incompressible-gas":
+            density = mixture.idealGasDensity(T=T_array,
+                                            speciesFractions=Y_in_2d)         # rho: (1,)
+        else:
+            density = mixture.densityValue
 
         area          = (domain.diameter ** 2) * PI / 4.0
         massFlowrate  = density[0] * area * self.velocity                 # Float
@@ -973,6 +971,134 @@ class Inlet:
         specieFrac    = Y_in                                              # 1D Array
 
         return massFlowrate, temperatureBC, specieFrac
+
+
+@dataclass
+class Outlet:
+    """
+    Stores outlet state extracted from the last cell of the solved domain.
+
+    Parameters
+    ----------
+    position : int, optional
+        Outlet cell index. Default is -1, i.e. the last cell.
+    temperature : float, optional
+        Outlet temperature [K].
+    speciesMassFractions : np.ndarray, optional
+        Outlet species mass fractions [-], shape (nspecies,).
+    density : float, optional
+        Outlet density [kg/m^3].
+    velocity : float, optional
+        Outlet velocity [m/s].
+    massFlowrate : float, optional
+        Outlet mass flow rate [kg/s].
+    concentrations : np.ndarray, optional
+        Outlet molar concentrations [mol/m^3], shape (nspecies,).
+    """
+
+    position: int = -1
+    temperature: float = 0.0
+    speciesMassFractions: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
+    density: float = 0.0
+    velocity: float = 0.0
+    massFlowrate: float = 0.0
+    concentrations: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
+
+    @classmethod
+    def fromSolver(cls, slv: "solver", position: int = -1) -> "Outlet":
+        """
+        Build Outlet object from a converged solver instance.
+
+        Parameters
+        ----------
+        slv : solver
+            Solver object containing final field values.
+        position : int, optional
+            Cell index from which outlet data are extracted.
+            Default is -1 (last cell).
+
+        Returns
+        -------
+        Outlet
+            Populated outlet state.
+        """
+        T = float(slv.temperatureField.cellField[position])
+        Y = np.asarray(slv.specieFields[:, position], dtype=float).copy()
+        rho = float(slv.density[position])
+        u = float(slv.velocityField.cellField[position])
+        mdot = float(slv.massFlux)
+
+        C = rho * Y / np.asarray(slv.mixture.molarMasses, dtype=float)
+
+        return cls(
+            position=position,
+            temperature=T,
+            speciesMassFractions=Y,
+            density=rho,
+            velocity=u,
+            massFlowrate=mdot,
+            concentrations=C,
+        )
+
+    def asDict(self, species=None) -> dict:
+        """
+        Return outlet data as a plain dictionary.
+
+        Parameters
+        ----------
+        species : list[Specie], optional
+            Species list used to label mass fractions and concentrations.
+
+        Returns
+        -------
+        dict
+            Dictionary representation of outlet data.
+        """
+        data = {
+            "position": self.position,
+            "temperature": self.temperature,
+            "density": self.density,
+            "velocity": self.velocity,
+            "massFlowrate": self.massFlowrate,
+            "speciesMassFractions": self.speciesMassFractions.copy(),
+            "concentrations": self.concentrations.copy(),
+        }
+
+        if species is not None:
+            data["speciesMassFractions"] = {
+                sp.name: float(self.speciesMassFractions[i])
+                for i, sp in enumerate(species)
+            }
+            data["concentrations"] = {
+                sp.name: float(self.concentrations[i])
+                for i, sp in enumerate(species)
+            }
+
+        return data
+
+    def specieIndex(self, name: str, species: list) -> int:
+        """
+        Return index of species with given name.
+        """
+        for i, sp in enumerate(species):
+            if sp.name.lower() == name.lower():
+                return i
+        raise ValueError(f"Species '{name}' not found in provided species list.")
+
+    def massFraction(self, name: str, species: list) -> float:
+        """
+        Return outlet mass fraction of the requested species.
+        """
+        i = self.specieIndex(name, species)
+        return float(self.speciesMassFractions[i])
+
+    def concentration(self, name: str, species: list) -> float:
+        """
+        Return outlet molar concentration of the requested species [mol/m^3].
+        """
+        i = self.specieIndex(name, species)
+        return float(self.concentrations[i])
+
 
 @dataclass
 class Zone:
@@ -1522,7 +1648,7 @@ class solver:
         fields via :meth:`Mixture.idealGasDensity`. Must be called after any
         update to ``temperatureField`` or ``specieFields``.
 
-    sourcesEvaluation(omega_heat=0.05, omega_mass=0.15, eq_rel_tol=1e-2, eq_abs_tol=1e-4)
+    sourcesEvaluation(underRelaxationFactorHeatSource=0.05, underRelaxationFactorMassSource=0.15, eq_rel_tol=1e-2, eq_abs_tol=1e-4)
         Evaluate and under-relax all reaction source terms for the current
         iteration.
 
@@ -1552,10 +1678,10 @@ class solver:
 
         Parameters
         ----------
-        omega_heat : float, optional
+        underRelaxationFactorHeatSource : float, optional
             Under-relaxation factor for reaction heat sources and their
             derivatives. Default is ``0.05``.
-        omega_mass : float, optional
+        underRelaxationFactorMassSource : float, optional
             Under-relaxation factor for species mass sources and their
             derivatives. Default is ``0.15``.
         eq_rel_tol : float, optional
@@ -1694,8 +1820,8 @@ class solver:
     current dense assembly allocates an ``(n_cells, n_cells)`` matrix
     even though only two diagonals are populated.
 
-    **Source term under-relaxation** — very low default values (``omega_heat=0.05``,
-    ``omega_mass=0.15``) indicate that reaction sources are expected to
+    **Source term under-relaxation** — very low default values (``underRelaxationFactorHeatSource=0.05``,
+    ``underRelaxationFactorMassSource=0.15``) indicate that reaction sources are expected to
     change rapidly between iterations. If convergence is slow, increasing
     these factors (up to ~0.5) may accelerate the solution once the
     fields are near equilibrium.
@@ -1731,7 +1857,7 @@ class solver:
         self.mixture    = mixture
         self.reaction   = reaction
         self.inlet      = inlet
-
+        self.outlet     = Outlet()
         self.massFlux   = inlet.inletValues(mixture=mixture, domain=self.mesh.domain)[0]
         self.specieFields = np.vstack([f.cellField for f in specieFields])
 
@@ -1777,7 +1903,7 @@ class solver:
             T=self.temperatureField.cellField,
             speciesFractions=self.specieFields
         )
-    def sourcesEvaluation(self, omega_heat=0.05, omega_mass=0.15,
+    def sourcesEvaluation(self, underRelaxationFactorHeatSource=0.05, underRelaxationFactorMassSource=0.15,
                         eq_rel_tol=1e-2, eq_abs_tol=1e-4):
         mass_old = self.massSources.copy()
         massd_old = self.massSourcesDerivative.copy()
@@ -1843,17 +1969,17 @@ class solver:
         self.heatReactionSourcesDerivative[reactionMask] = dQ_dT[reactionMask]
 
         self.heatReactionSources = (
-            (1.0 - omega_heat) * heat_rxn_old + omega_heat * self.heatReactionSources
+            (1.0 - underRelaxationFactorHeatSource) * heat_rxn_old + underRelaxationFactorHeatSource * self.heatReactionSources
         )
         self.heatReactionSourcesDerivative = (
-            (1.0 - omega_heat) * heatd_rxn_old + omega_heat * self.heatReactionSourcesDerivative
+            (1.0 - underRelaxationFactorHeatSource) * heatd_rxn_old + underRelaxationFactorHeatSource * self.heatReactionSourcesDerivative
         )
 
         self.heatSources += self.heatReactionSources
         self.heatSourcesDerivative[:] = self.heatReactionSourcesDerivative
 
-        self.massSources = (1.0 - omega_mass) * mass_old + omega_mass * self.massSources
-        self.massSourcesDerivative = (1.0 - omega_mass) * massd_old + omega_mass * self.massSourcesDerivative
+        self.massSources = (1.0 - underRelaxationFactorMassSource) * mass_old + underRelaxationFactorMassSource * self.massSources
+        self.massSourcesDerivative = (1.0 - underRelaxationFactorMassSource) * massd_old + underRelaxationFactorMassSource * self.massSourcesDerivative
 
     def matrixSpecieEquationAssembly(self, specieIndex: int):
         n = self.mesh.n_cells
@@ -1959,9 +2085,11 @@ class solver:
         self.update_density()
 
     def steadyState(self, max_iter: int,
-                    relaxationFactorSpecie: float,
-                    relaxationFactorTemperature: float,
-                    convergenceCriteria: float):
+                    relaxationFactorSpecie: float = 0.4,
+                    relaxationFactorTemperature: float = 0.4,
+                    convergenceCriteria: float = 1e-6,
+                    temperatureClipLow: float = 200,
+                    temperatureClipHigh : float = 2000):
 
         self.update_density()
         
@@ -1992,7 +2120,7 @@ class solver:
             self.sourcesEvaluation()
             A_T, b_T = self.matrixTemperatureEquationAssembly()
             T_star = spsolve(A_T, b_T)
-            T_star = np.clip(T_star, 200.0, 2000.0)
+            T_star = np.clip(T_star, temperatureClipLow, temperatureClipHigh)
             
             self.temperatureField.cellField[:] = (
                 T_old + relaxationFactorTemperature * (T_star - T_old)
@@ -2011,9 +2139,9 @@ class solver:
             if max(dY, dT) < convergenceCriteria:
                 print(f"\nConverged successfully after {it} iterations!")
                 break
-        results = self.specieFields[:, -1]
-        return results
-            
+
+        self.outlet = Outlet.fromSolver(self)
+        return self.outlet
 
 class ReactorPlotter:
     def __init__(self, solver):

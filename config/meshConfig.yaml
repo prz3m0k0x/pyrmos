@@ -1,0 +1,24 @@
+---
+nZones: 3
+
+zones:
+  zone0:
+    length: 1.0
+    heatSource: false
+    massSource: true
+    heatSourceValue: null
+
+  zone1:
+    length: 1.0
+    heatSource: true
+    massSource: false
+    heatSourceValue: -50000.0
+
+  zone2:
+    length: 1.0
+    heatSource: false
+    massSource: true
+    heatSourceValue: null
+
+mesh:
+  sizing: 0.005
