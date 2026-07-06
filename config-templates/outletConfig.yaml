@@ -1,0 +1,11 @@
+# Outlet expression template
+#
+# Define derived quantities that are computed from the final solved reactor state.
+# These expressions are evaluated against a context containing at least:
+# - inlet
+# - outlet
+# - any derived values already computed earlier in the pass.
+#
+# Example pattern:
+# expr3: "(inlet.specie.so2 - outlet.specie.so2) / inlet.specie.so2"
+# expr4: "inlet.temperature - outlet.temperature"

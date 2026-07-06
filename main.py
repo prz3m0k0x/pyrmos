@@ -1,28 +1,45 @@
-import yaml
-from pathlib import Path
+# main.py
 import copy
-from scripts import PSOOPtimizer
-from scripts import solverReactor
+from pathlib import Path
+import yaml
+
 from scripts.usrExpr import UserExpression
+from scripts.PSOOPtimizer import PSOConfig, PSOOptimizer
+from scripts.solverReactor import build_reactor_from_context, Outlet, ReactorPlotter
 
 def load_yaml(path):
     with open(path) as f:
         return yaml.safe_load(f) or {}
 
 
-def save_yaml(path, data):
+def _save_yaml(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         yaml.safe_dump(data, f, sort_keys=False)
 
-def load_expression_registry(path, UserExpression):
+
+def load_expression_registry(path, expr_cls=UserExpression):
     raw = load_yaml(path)
-    return {name: UserExpression(expr) for name, expr in raw.items()}
+
+    if not isinstance(raw, dict):
+        raise TypeError(f"{path} must contain a mapping of name: expression")
+
+    registry = {}
+    for name, expr in raw.items():
+        if not isinstance(expr, str):
+            raise TypeError(
+                f"{path}: expression '{name}' must be a string, got {type(expr).__name__}"
+            )
+        registry[name] = expr_cls(expr)
+
+    return registry
+
 
 def make_serializable_context(ctx):
     out = copy.deepcopy(ctx)
     out.pop("expressions", None)
+    out.pop("outletExpressions", None)
     return out
 
 def make_case_dir(base_dir, study_name):
@@ -36,18 +53,7 @@ def make_case_dir(base_dir, study_name):
             case_dir.mkdir(parents=True, exist_ok=False)
             return case_dir
         i += 1
-
-def build_outlet_context(outlet_temperature, outlet_species):
-    return {
-        "temperature": outlet_temperature,
-        "specie": outlet_species,
-    }
-        
-def load_expression_registry(path, UserExpression):
-    raw = load_yaml(path)
-    return {name: UserExpression(expr) for name, expr in raw.items()}
-
-def build_context(config_dir, UserExpression):
+def build_context(config_dir, expr_cls=UserExpression):
     config_dir = Path(config_dir)
 
     mesh_cfg = load_yaml(config_dir / "meshConfig.yaml")
@@ -55,7 +61,14 @@ def build_context(config_dir, UserExpression):
     solver_cfg = load_yaml(config_dir / "solverNumerics.yaml")
     species_cfg = load_yaml(config_dir / "speciesConfig.yaml")
     pso_cfg = load_yaml(config_dir / "psoAlgorithm.yaml")
-    expr_registry = load_expression_registry(config_dir / "userExpressions.yaml", UserExpression)
+
+    expr_registry = load_expression_registry(config_dir / "userExpressions.yaml", expr_cls)
+
+    outlet_expr_path = config_dir / "outletConfig.yaml"
+    outlet_expr_registry = load_expression_registry(outlet_expr_path
+    ) if outlet_expr_path.exists() else {}
+
+    print("Loaded outlet expressions:", outlet_expr_registry.keys())
 
     ctx = {
         "mesh": mesh_cfg,
@@ -69,11 +82,8 @@ def build_context(config_dir, UserExpression):
         "chemistry": species_cfg,
         "pso": pso_cfg,
         "expressions": expr_registry,
+        "outletExpressions": outlet_expr_registry,
     }
-
-    ctx["zones"] = ctx["mesh"]["zones"]
-    ctx["species"] = ctx["chemistry"]["species"]
-    ctx["reactions"] = ctx["chemistry"]["reactions"]
 
     return ctx
 
@@ -84,7 +94,7 @@ def resolve_value(value, root_ctx, expr_registry):
     if isinstance(value, dict):
         changed_any = False
         for key, subval in list(value.items()):
-            if key == "expressions":
+            if key in ("expressions", "outletExpressions"):
                 continue
             newval, changed = resolve_value(subval, root_ctx, expr_registry)
             value[key] = newval
@@ -101,8 +111,9 @@ def resolve_value(value, root_ctx, expr_registry):
 
     return value, False
 
+
 def resolve_expressions_in_context(ctx, max_passes=10):
-    expr_registry = ctx["expressions"]
+    expr_registry = ctx.get("expressions", {})
 
     for _ in range(max_passes):
         _, changed = resolve_value(ctx, ctx, expr_registry)
@@ -113,53 +124,6 @@ def resolve_expressions_in_context(ctx, max_passes=10):
 
     return ctx
 
-def find_unresolved_expr_names(value, expr_registry, found=None):
-    if found is None:
-        found = []
-
-    if isinstance(value, str) and value in expr_registry:
-        found.append(value)
-    elif isinstance(value, dict):
-        for key, subval in value.items():
-            if key == "expressions":
-                continue
-            find_unresolved_expr_names(subval, expr_registry, found)
-    elif isinstance(value, list):
-        for item in value:
-            find_unresolved_expr_names(item, expr_registry, found)
-
-    return found
-def set_by_dotted_path(data, path, value):
-    parts = path.split(".")
-    node = data
-
-    for part in parts[:-1]:
-        if part not in node:
-            raise KeyError(f"Unknown path while setting value: {path}")
-        node = node[part]
-
-    last = parts[-1]
-    if last not in node:
-        raise KeyError(f"Unknown final key while setting value: {path}")
-
-    node[last] = value
-
-def get_by_dotted_path(data, path):
-    parts = path.split(".")
-    node = data
-
-    for part in parts:
-        if not isinstance(node, dict):
-            raise KeyError(f"Cannot descend into non-dict at: {part} for path {path}")
-        if part not in node:
-            raise KeyError(f"Unknown path: {path}")
-        node = node[part]
-
-    return node
-
-def apply_particle_to_context(ctx, particle, parameter_defs):
-    for x, param in zip(particle, parameter_defs):
-        set_by_dotted_path(ctx, param["key"], float(x))
 
 def evaluate_named_expressions(expr_registry, context):
     results = {}
@@ -184,145 +148,210 @@ def evaluate_named_expressions(expr_registry, context):
             break
 
     if pending:
-        raise RuntimeError(
-            f"Could not resolve outlet expressions: {list(pending.keys())}"
-        )
+        raise RuntimeError(f"Could not resolve expressions: {list(pending.keys())}")
 
     return results
 
-def run_single_case(base_ctx, particle, UserExpression, outlet_config_path, runs_root="cases"):
-    case_ctx = copy.deepcopy(base_ctx)
 
-    apply_particle_to_context(case_ctx, particle, case_ctx["pso"]["parameters"])
-    case_ctx = resolve_expressions_in_context(case_ctx)
+def set_by_dotted_path(data, path, value):
+    parts = path.split(".")
+    node = data
 
-    case_dir = make_case_dir(runs_root, case_ctx["pso"]["study"]["name"])
+    for part in parts[:-1]:
+        if part not in node:
+            raise KeyError(f"Unknown path while setting value: {path}")
+        node = node[part]
 
-    resolved_case = make_serializable_context(case_ctx)
-    save_yaml(case_dir / "caseSetup.yaml", resolved_case)
+    last = parts[-1]
+    if last not in node:
+        raise KeyError(f"Unknown final key while setting value: {path}")
+    node[last] = value
 
-    outlet_ctx = run_reactor_case(case_ctx, case_dir)
 
-    full_context = copy.deepcopy(resolved_case)
-    full_context["outlet"] = outlet_ctx
+def get_by_dotted_path(data, path):
+    parts = path.split(".")
+    node = data
 
-    outlet_expr_registry = load_expression_registry(outlet_config_path, UserExpression)
-    outlet_expr_values = evaluate_named_expressions(outlet_expr_registry, full_context)
+    for part in parts:
+        if not isinstance(node, dict):
+            raise KeyError(f"Cannot descend into non-dict for path: {path}")
+        if part not in node:
+            raise KeyError(f"Unknown path: {path}")
+        node = node[part]
 
-    outlet_data = {
-        "outlet": outlet_ctx,
-        "derived": outlet_expr_values,
-    }
-    save_yaml(case_dir / "outlet.yaml", outlet_data)
+    return node
 
-    result_ctx = copy.deepcopy(full_context)
-    result_ctx["derived"] = outlet_expr_values
 
-    return case_dir, result_ctx
+def apply_particle_to_context(ctx, particle, parameter_defs):
+    for x, param in zip(particle, parameter_defs):
+        set_by_dotted_path(ctx, param["key"], float(x))
 
-def extract_objectives(result_ctx, output_defs):
+def extract_objectives_for_pso(result_ctx, output_defs):
     values = []
 
     for outdef in output_defs:
         key = outdef["key"]
+        goal = str(outdef.get("goal", "minimize")).lower()
 
         if key in result_ctx.get("derived", {}):
-            val = result_ctx["derived"][key]
-        else:
-            val = get_by_dotted_path(result_ctx, key)
+            value = float(result_ctx["derived"][key])
+            print("derived source:", key, value)
 
-        values.append(float(val))
+        elif key == "expr3":
+            inlet_so2 = float(result_ctx["inlet"]["specie"]["so2"])
+            outlet_so2 = float(result_ctx["outlet"]["specie"]["so2"])
+            value = (inlet_so2 - outlet_so2) / inlet_so2
+            print("expr3 inputs:", inlet_so2, outlet_so2, value)
+
+        elif key == "expr4":
+            inlet_t = float(result_ctx["inlet"]["temperature"])
+            outlet_t = float(result_ctx["outlet"]["temperature"])
+            value = inlet_t - outlet_t
+            print("expr4 inputs:", inlet_t, outlet_t, value)
+
+        else:
+            value = float(get_by_dotted_path(result_ctx, key))
+            print("path source:", key, value)
+
+        pso_value = -value if goal == "maximize" else value
+        print(f"objective {key}: raw={value}, goal={goal}, pso={pso_value}")
+        values.append(pso_value)
 
     return values
-def evaluate_particle(base_ctx, particle, UserExpression, outlet_config_path, runs_root="cases"):
-    case_dir, result_ctx = run_single_case(
-        base_ctx=base_ctx,
-        particle=particle,
-        UserExpression=UserExpression,
-        outlet_config_path=outlet_config_path,
-        runs_root=runs_root,
+
+def run_case(case_ctx, case_dir):
+    slv, species = build_reactor_from_context(case_ctx)
+    slv.initializeCase()
+
+    solver_cfg = case_ctx["solver"]
+    urf = solver_cfg["underRelaxationFactors"]
+
+    outlet_obj = slv.steadyState(
+        maxiter=int(solver_cfg.get("maxIter", 500)),
+        relaxationFactorSpecie=float(urf["species"]),
+        relaxationFactorTemperature=float(urf["temperature"]),
+        convergenceCriteria=float(solver_cfg["scaledResidual"]),
+        temperatureClipLow=float(solver_cfg["temperatureClipLow"]),
+        temperatureClipHigh=float(solver_cfg["temperatureClipHigh"]),
     )
 
-    output_defs = base_ctx["pso"]["outputs"]
-    objectives = extract_objectives(result_ctx, output_defs)
+    if outlet_obj is None:
+        outlet_obj = Outlet.fromSolver(slv)
 
-    return objectives
+    outlet_data = outlet_obj.asDict(species=species)
 
-def postprocess_case(
-    ctx,
-    UserExpression,
-    outlet_temperature,
-    outlet_species,
-    outlet_config_path,
-    runs_root="runs",
-):
-    study_name = ctx["pso"]["study"]["name"]
-    case_dir = make_case_dir(runs_root, study_name)
-
-    resolved_case = make_serializable_context(ctx)
-    save_yaml(case_dir / "caseSetup.yaml", resolved_case)
-
-    outlet_ctx = build_outlet_context(outlet_temperature, outlet_species)
-
-    full_context = copy.deepcopy(resolved_case)
-    full_context["outlet"] = outlet_ctx
-
-    outlet_expr_registry = load_expression_registry(outlet_config_path, UserExpression)
-    outlet_expr_values = evaluate_named_expressions(outlet_expr_registry, full_context)
-
-    outlet_data = {
-        "outlet": outlet_ctx,
-        "derived": outlet_expr_values,
+    _save_yaml(
+        Path(case_dir) / "reactorDebug.yaml",
+        {
+            "mesh": {
+                "n_cells": int(slv.mesh.n_cells),
+                "length": float(slv.mesh.length),
+            },
+            "outlet": outlet_data,
+        },
+    )
+    plotter = ReactorPlotter(slv)
+    plotter.save_temperature(Path(case_dir) / "temperature.png")
+    plotter.save_species(Path(case_dir) / "species.png")
+    plotter.save_all(Path(case_dir) / "profiles.png")
+    return {
+        "temperature": float(outlet_data["temperature"]),
+        "specie": {k: float(v) for k, v in outlet_data["speciesMassFractions"].items()},
+        "density": float(outlet_data["density"]),
+        "velocity": float(outlet_data["velocity"]),
+        "massFlowrate": float(outlet_data["massFlowrate"]),
+        "concentrations": {k: float(v) for k, v in outlet_data["concentrations"].items()},
     }
 
-    save_yaml(case_dir / "outlet.yaml", outlet_data)
+def make_pso_config_from_context(ctx):
+    pso_block = ctx["pso"]["pso"]
+    parameter_defs = ctx["pso"]["parameters"]
+    output_defs = ctx["pso"]["outputs"]
+    constraints = ctx["pso"].get("constraints", {})
 
-    return case_dir, outlet_data
+    x_lb = [p["bounds"][0] for p in parameter_defs]
+    x_ub = [p["bounds"][1] for p in parameter_defs]
+
+    linear = constraints.get("linear", [])
+    constr_matrix = [c["A"] for c in linear] if linear else []
+    constr_lb = [c["lb"] for c in linear] if linear else []
+    constr_ub = [c["ub"] for c in linear] if linear else []
+
+    return PSOConfig(
+        h_factor=pso_block["hfactor"],
+        max_iter=pso_block["maxiter"],
+        n_params=len(parameter_defs),
+        n_responses=len(output_defs),
+        t_neighbors=pso_block["tneighbors"],
+        w_init=pso_block["winit"],
+        w_finish=pso_block["wfinish"],
+        c1_init=pso_block["c1init"],
+        c1_finish=pso_block["c1finish"],
+        c2_init=pso_block["c2init"],
+        c2_finish=pso_block["c2finish"],
+        v_max_factor=pso_block["vmaxfactor"],
+        x_lb=x_lb,
+        x_ub=x_ub,
+        constr_matrix=constr_matrix,
+        constr_lb=constr_lb,
+        constr_ub=constr_ub,
+    )
+
 
 def main():
     base_ctx = build_context("config", UserExpression)
     base_ctx = resolve_expressions_in_context(base_ctx)
 
-    pso_cfg = base_ctx["pso"]
-    parameter_defs = pso_cfg["parameters"]
+    pso_cfg = make_pso_config_from_context(base_ctx)
+    print(pso_cfg)
+    def objective_function(particle, iteration):
+        case_ctx = copy.deepcopy(base_ctx)
 
-    bounds = [tuple(p["bounds"]) for p in parameter_defs]
+        apply_particle_to_context(
+            case_ctx,
+            particle,
+            case_ctx["pso"]["parameters"],
+        )
+        print("applied inlet.so2:", case_ctx["inlet"]["specie"]["so2"])
+        print("applied inlet.temperature:", case_ctx["inlet"]["temperature"])
+        case_ctx = resolve_expressions_in_context(case_ctx)
 
-    def objective_function(particle):
-        return evaluate_particle(
-            base_ctx=base_ctx,
-            particle=particle,
-            UserExpression=UserExpression,
-            outlet_config_path="config/outletConfig.yaml",
-            runs_root="cases",
+        study_name = case_ctx["pso"]["study"]["name"]
+        case_dir = make_case_dir("cases", study_name)
+
+        _save_yaml(case_dir / "caseSetup.yaml", make_serializable_context(case_ctx))
+
+        reactor_result = run_case(case_ctx, case_dir)
+
+        result_ctx = copy.deepcopy(make_serializable_context(case_ctx))
+        result_ctx["outlet"] = reactor_result
+
+        outlet_expr_values = evaluate_named_expressions(
+            case_ctx.get("outletExpressions", {}),
+            result_ctx,
         )
 
-    optimizer = PSOOptimizer(
-        bounds=bounds,
-        config=pso_cfg["pso"],
-        objective_function=objective_function,
-    )
+        result_ctx["derived"] = outlet_expr_values
 
-    best = optimizer.optimize()
-    print(best)
+        _save_yaml(
+            case_dir / "outlet.yaml",
+            {
+                "outlet": reactor_result,
+                "derived": outlet_expr_values,
+            },
+        )
+        print("derived =", outlet_expr_values)
+        print("output defs =", case_ctx["pso"]["outputs"])
 
+        
+        return extract_objectives_for_pso(result_ctx, case_ctx["pso"]["outputs"])
 
-ctx = build_context("config", UserExpression)
-ctx = resolve_expressions_in_context(ctx)
+    optimizer = PSOOptimizer.from_random(pso_cfg, objective_function=objective_function)
+    swarm = optimizer.run()
+    
+    best_particle = swarm.global_best_position
+    print("Optimization finished.")
+    print("Best particle:", best_particle)
 
-outlet_temperature = 720.0
-outlet_species = {
-    "so2": 0.03,
-    "so3": 0.07,
-    "o2": 0.18,
-    "n2": 0.72,
-}
-
-case_dir, outlet_data = postprocess_case(
-    ctx=ctx,
-    UserExpression=UserExpression,
-    outlet_temperature=outlet_temperature,
-    outlet_species=outlet_species,
-    outlet_config_path="config/outletConfig.yaml",
-    runs_root="cases",
-)
+if __name__ == "__main__":
+    main()

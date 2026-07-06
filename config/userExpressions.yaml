@@ -1,3 +1,2 @@
-expr1: "(1.0 - inlet.specie.so2 - inlet.specie.so3) * 0.1"
+expr1: "(1.0 - inlet.specie.so2 - inlet.specie.so3) * 0.21"
 expr2: "1.0 - inlet.specie.so2 - inlet.specie.so3 - inlet.specie.o2"
-expr3: "zones.zone1.heatSourceValue * 0.2"

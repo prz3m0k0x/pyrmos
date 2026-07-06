@@ -1,7 +1,7 @@
+# scripts/usrExpr.py
 import ast
 import operator as op
-import yaml
-from pathlib import Path
+
 
 _ALLOWED_BINOPS = {
     ast.Add: op.add,

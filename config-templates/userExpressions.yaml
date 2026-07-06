@@ -1,0 +1,9 @@
+# User-defined expression registry template
+#
+# Each entry maps a symbolic name to an arithmetic expression string.
+# The expression engine supports numbers, +, -, *, /, **, unary +/-,
+# and dotted dictionary access such as inlet.specie.so2.
+#
+# Example pattern:
+# expr1: "(1.0 - inlet.specie.so2 - inlet.specie.so3) * 0.21"
+# expr2: "1.0 - inlet.specie.so2 - inlet.specie.so3 - inlet.specie.o2"

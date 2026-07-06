@@ -3,40 +3,38 @@ nSpecies: 4
 
 species:
   so2:
-    molarMass: 0.64
+    molarMass: 0.064
     heatCapacityModel: polynomial
     enthalpyFormation: -296861.220
     entropyFormation: 248.100
     heatCapacityCoefficients: [3.53]
 
   o2:
-    molarMass: 0.32
+    molarMass: 0.032
     heatCapacityModel: polynomial
     enthalpyFormation: 0.0
     entropyFormation: 205.00
     heatCapacityCoefficients: [3.53]
 
   n2:
-    molarMass: 0.28
+    molarMass: 0.028
     heatCapacityModel: polynomial
     enthalpyFormation: 0.0
     entropyFormation: 191.00
     heatCapacityCoefficients: [3.53]
 
   so3:
-    molarMass: 0.800
+    molarMass: 0.080
     heatCapacityModel: polynomial
     enthalpyFormation: -395782.300
     entropyFormation: 256.6
     heatCapacityCoefficients: [3.53]
 
 reactions:
-  - name: so2_conversion
-    isReversible: 1
-    ahrreniusPreExponent: 50e9
+  so2_conversion:
+    isReversible: true
+    ahrreniusPreExponent: 5.0e9
     ahrreniusActivationEnergy: 165000.0
-
-  - name: so2_conversion
     stochiometricCoefficients: [-1.0, -0.5, 0.0, 1.0]
     speciesExponent: [1.0, 0.5, 0.0, 0.0]
     reversedSpecieExponent: [0.0, 0.0, 0.0, 1.0]

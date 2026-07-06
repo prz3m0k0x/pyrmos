@@ -1,0 +1,42 @@
+# PSO optimization configuration template
+#
+# This file defines the optimization study, the model entry point, the design
+# variables, the objective outputs, the PSO schedule, and optional linear constraints.
+#
+# Rules:
+# - parameters[].key must be a dotted path inside the runtime context.
+# - bounds are [lower, upper].
+# - outputs[].goal can be minimize or maximize.
+# - The optimizer minimizes internally, so maximize outputs are negated in code.
+# - linear constraints are optional.
+#
+# Example pattern:
+# study:
+#   name: so2_reactor_pso
+# model:
+#   module: reactor_problem
+#   function: run_case
+# parameters:
+# - name: inletso2massfraction
+#   key: inlet.specie.so2
+#   bounds: [0.10, 0.20]
+# - name: inlettemperature
+#   key: inlet.temperature
+#   bounds: [750.0, 850.0]
+# outputs:
+# - name: so2_conversion
+#   key: expr3
+#   goal: maximize
+# pso:
+#   hfactor: 5
+#   maxiter: 5
+#   tneighbors: 3
+#   winit: 0.7
+#   wfinish: 0.4
+#   c1init: 0.6
+#   c1finish: 0.8
+#   c2init: 0.5
+#   c2finish: 0.6
+#   vmaxfactor: 0.2
+# constraints:
+#   linear: []

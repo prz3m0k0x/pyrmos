@@ -7,13 +7,12 @@ model:
   function: run_case
 
 parameters:
-  - name: inlet_so2_mass_fraction
+  - name: inletso2massfraction
     key: inlet.specie.so2
     bounds: [0.10, 0.20]
-
-  - name: inlet_temperature
+  - name: inlettemperature
     key: inlet.temperature
-    bounds: [600.0, 800.0]
+    bounds: [750.0, 850.0]
 outputs:
   - name: so2_conversion
     key: expr3

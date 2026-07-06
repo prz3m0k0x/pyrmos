@@ -1,6 +1,6 @@
 ---
 diameter: 2.5
-inletVelocity: 0.5
+inletVelocity: 1.0
 inletTemperature: 690
 
 speciesYInlet:

@@ -1,0 +1,30 @@
+# Reactor mesh configuration template
+#
+# Fill in the zone lengths, source flags, and target mesh sizing for your case.
+# Rules:
+# - zone lengths must be in meters.
+# - massSource=true activates reaction source terms in that zone.
+# - heatSource=true activates prescribed heating in that zone.
+# - heatSourceValue is used only when heatSource=true.
+# - sizing is the target cell size in meters.
+#
+# Example pattern:
+# nZones: 3
+# zones:
+#   zone0:
+#     length: 0.5
+#     heatSource: false
+#     massSource: true
+#     heatSourceValue: null
+#   zone1:
+#     length: 1.0
+#     heatSource: true
+#     massSource: false
+#     heatSourceValue: -50000.0
+#   zone2:
+#     length: 1.0
+#     heatSource: false
+#     massSource: true
+#     heatSourceValue: null
+# mesh:
+#   sizing: 0.0025

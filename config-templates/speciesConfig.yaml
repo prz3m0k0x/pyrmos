@@ -1,0 +1,50 @@
+# Species and reaction chemistry template
+#
+# Define each species in the exact order used by the solver. Molar masses must
+# be in kg/mol. For a polynomial heat-capacity model, provide coefficients in
+# ascending order as expected by numpy.polynomial.Polynomial.
+#
+# Reaction notes:
+# - stochiometricCoefficients: reactants are negative, products are positive.
+# - speciesExponent: forward mass-action exponents.
+# - reversedSpecieExponent: backward exponents if reversibility is enabled.
+# - ahrreniusPreExponent and ahrreniusActivationEnergy define Arrhenius kinetics.
+#
+# Example pattern:
+# nSpecies: 4
+# species:
+#   so2:
+#     molarMass: 0.064
+#     heatCapacityModel: polynomial
+#     enthalpyFormation: -296861.220
+#     entropyFormation: 248.100
+#     heatCapacityCoefficients: [3.53]
+#   o2:
+#     molarMass: 0.032
+#     heatCapacityModel: polynomial
+#     enthalpyFormation: 0.0
+#     entropyFormation: 205.00
+#     heatCapacityCoefficients: [3.53]
+#   n2:
+#     molarMass: 0.028
+#     heatCapacityModel: polynomial
+#     enthalpyFormation: 0.0
+#     entropyFormation: 191.00
+#     heatCapacityCoefficients: [3.53]
+#   so3:
+#     molarMass: 0.080
+#     heatCapacityModel: polynomial
+#     enthalpyFormation: -395782.300
+#     entropyFormation: 256.6
+#     heatCapacityCoefficients: [3.53]
+# reactions:
+#   so2_conversion:
+#     isReversible: true
+#     ahrreniusPreExponent: 5.0e9
+#     ahrreniusActivationEnergy: 165000.0
+#     stochiometricCoefficients: [-1.0, -0.5, 0.0, 1.0]
+#     speciesExponent: [1.0, 0.5, 0.0, 0.0]
+#     reversedSpecieExponent: [0.0, 0.0, 0.0, 1.0]
+# mixture:
+#   densityModel: ideal-incompressible-gas
+#   densityValue: null

@@ -10,6 +10,8 @@ UNIVERSALGASCONSTANT = 8.31446261815324 #J/molK
 T_REF   = 273.15
 P_REF   = 101325.0 #Pa
 PI      = 3.141592653589793
+from pathlib import Path
+import yaml
 
 @dataclass
 class Specie:
@@ -121,14 +123,29 @@ class Specie:
     ... )
     >>> o2.heatCapacity(np.array([300.0, 1000.0]))
     """
-    counter: ClassVar[int] = 0
 
-    name      : str
-    molarMass : float
-    heatCapacityModel   : str   = "const" 
-    enthalpyFormation   : float = 0.0
-    entropyFormation    : float = 0.0
-    heatCapacityValue   : float = 900
+    counter: ClassVar[int] = 0
+    name: str
+    molarMass: float
+    heatCapacityModel: str = "const"
+    enthalpyFormation: float = 0.0
+    entropyFormation: float = 0.0
+    heatCapacityValue: float = 900.0
+    heatCapacityCoefficients: list[float] = field(default_factory=list)
+
+    def __post_init__(self):
+        self.id = Specie.counter
+        type(self).counter += 1
+        if self.heatCapacityModel == "polynomial":
+            self.cp_poly = np.polynomial.Polynomial(self.heatCapacityCoefficients)
+            self.H_poly = self.cp_poly.integ()
+
+    @classmethod
+    def from_dict(cls, name: str, cfg: dict) -> "Specie":
+        data = dict(cfg)
+        if "heatCapacityCoefficients" in data and data["heatCapacityCoefficients"] is None:
+            data["heatCapacityCoefficients"] = []
+        return cls(name=name, **data)
     heatCapacityCoefficients : list[float] = field(default_factory=list)
     
     def __post_init__(self):
@@ -490,7 +507,26 @@ class Reaction:
             molar_masses_list.append(specie.molarMass)
             
         self.molarMasses = np.array(molar_masses_list)
+    @classmethod
+    def from_dict(cls, name: str, cfg: dict, species: list[Specie]) -> "Reaction":
+        data = dict(cfg)
 
+        data["stochiometricCoefficients"] = np.array(
+            data["stochiometricCoefficients"], dtype=float
+        )
+        data["speciesExponent"] = np.array(
+            data["speciesExponent"], dtype=float
+        )
+        data["reversedSpecieExponent"] = np.array(
+            data["reversedSpecieExponent"], dtype=float
+        )
+
+        data["isReversible"] = bool(data.get("isReversible", True))
+        data["ahrreniusPreExponent"] = float(data.get("ahrreniusPreExponent", 1.0))
+        data["ahrreniusActivationEnergy"] = float(data.get("ahrreniusActivationEnergy", 0.0))
+
+        return cls(name=name, species=species, **data)
+    
     def _equilibriumMask(self,
                         rateForward: np.ndarray,
                         rateBackward: np.ndarray,
@@ -808,6 +844,16 @@ class Mixture:
     species         : List          = field(default_factory=list, repr=False)
     molarMasses     : np.ndarray    = field(init=False)
 
+    @classmethod
+    def from_dict(cls, cfg: dict, species: list[Specie]) -> "Mixture":
+        density_value = cfg.get("densityValue", 1.2225)
+        if density_value is None:
+            density_value = 1.2225
+        return cls(
+            densityModel=cfg.get("densityModel", "ideal-incompressible-gas"),
+            densityValue=float(density_value),
+            species=species,
+        )
     def __post_init__(self):
         self.molarMasses = np.asarray([sp.molarMass for sp in self.species], dtype=float)
 
@@ -971,7 +1017,24 @@ class Inlet:
         specieFrac    = Y_in                                              # 1D Array
 
         return massFlowrate, temperatureBC, specieFrac
+    
+    @classmethod
+    def from_dict(cls, cfg: dict, species: list[Specie]) -> "Inlet":
+        order = [sp.name for sp in species]
+        specie_map = cfg["specie"]
+        y = np.array([float(specie_map[name]) for name in order], dtype=float)
 
+        total = np.sum(y)
+        if total <= 0.0:
+            raise ValueError("Inlet species mass fractions must sum to > 0")
+        y /= total
+
+        return cls(
+            position=int(cfg.get("position", 0)),
+            velocity=float(cfg["velocity"]),
+            temperature=float(cfg["temperature"]),
+            speciesMassFractions=y.tolist(),
+        )
 
 @dataclass
 class Outlet:
@@ -1200,29 +1263,33 @@ class Zone:
     >>> z_heat.heatSource, z_heat.heatSourceValue
     (True, 500.0)
     """
-    counter : ClassVar[int] = 0
-    length  : float         = 0.005
-    zoneType    : str           = "null"
+    counter: ClassVar[int] = 0
+    length: float = 0.005
+    zoneType: str = "null"
 
     def __post_init__(self):
-        type(self).counter  += 1
-        self.id             = type(self).counter
-        
-        self.heatSource      : bool  = False
-        self.massSource      : bool  = False
-        self.heatSourceValue : float = 0.0
+        type(self).counter += 1
+        self.id = type(self).counter
+        self.heatSource = False
+        self.massSource = False
+        self.heatSourceValue = 0.0
 
-    def zoneAssign(self, heating: bool = False, reaction: bool = True):
-        self.heatSource = heating
-        self.massSource = reaction
+    @classmethod
+    def from_dict(cls, name: str, cfg: dict) -> "Zone":
+        zone = cls(
+            length=float(cfg["length"]),
+            zoneType=cfg.get("zoneType", name),
+        )
 
-    def zoneAssignHeating(self, heatValue: float):
-        """
-        Assign the total heat power [W] for this zone (Case B)
-        or the volumetric heat generation [W/m^3] (Case A).
-        """
-        self.heatSourceValue = heatValue
-        self.heatSource = True
+        zone.heatSource = bool(cfg.get("heatSource", False))
+        zone.massSource = bool(cfg.get("massSource", True))
+
+        heat_value = cfg.get("heatSourceValue", 0.0)
+        if heat_value is None:
+            heat_value = 0.0
+        zone.heatSourceValue = float(heat_value)
+
+        return zone
 
 class Mesh:
     """
@@ -1426,6 +1493,19 @@ class Mesh:
 
         self.n_cells = n_total
         self.length  = float(z_starts[-1] + Lz[-1])
+
+    @classmethod
+    def from_dict(cls, cfg: dict, domain, zones: list["Zone"]) -> "Mesh":
+        mesh_block = cfg.get("mesh", {})
+        sizing = float(mesh_block.get("sizing", 0.005))
+
+        mesh = cls(
+            domain=domain,
+            zoneList=zones,
+            sizing=sizing,
+        )
+        mesh.meshCreate()
+        return mesh
 
 class scalarField:
     """
@@ -1903,8 +1983,14 @@ class solver:
             T=self.temperatureField.cellField,
             speciesFractions=self.specieFields
         )
-    def sourcesEvaluation(self, underRelaxationFactorHeatSource=0.05, underRelaxationFactorMassSource=0.15,
-                        eq_rel_tol=1e-2, eq_abs_tol=1e-4):
+
+    def sourcesEvaluation(
+        self,
+        underRelaxationFactorHeatSource=0.05,
+        underRelaxationFactorMassSource=0.15,
+        eq_rel_tol=1e-8,
+        eq_abs_tol=1e-20,
+    ):
         mass_old = self.massSources.copy()
         massd_old = self.massSourcesDerivative.copy()
 
@@ -1931,8 +2017,8 @@ class solver:
         reactionMask = self.mesh.cell_mass_flag
         heatMask = self.mesh.cell_heat_flag
 
-
         self.heatSources[heatMask] += np.asarray(self.mesh.cell_heat_value, dtype=float)[heatMask]
+
         rateForward, rateBackward = self.reaction.reactionRate(T, C)
         self.reactionRates[0, :] = rateForward
         self.reactionRates[1, :] = rateBackward
@@ -1940,10 +2026,14 @@ class solver:
         net_rate = rateForward - rateBackward
         rate_scale = np.maximum(np.maximum(np.abs(rateForward), np.abs(rateBackward)), 1.0)
         near_eq = np.abs(net_rate) <= (eq_rel_tol * rate_scale + eq_abs_tol)
-
         near_eq = near_eq & reactionMask
 
-        massSources_all = self.reaction.reactionMassSource((rateForward, rateBackward))
+        # raw chemistry source from stoichiometry, no extra masking inside helper
+        massSources_all = (
+            net_rate[np.newaxis, :]
+            * self.reaction.stochiometricCoefficients[:, np.newaxis]
+            * self.reaction.molarMasses[:, np.newaxis]
+        )
         massSources_all[:, near_eq] = 0.0
         self.massSources[:, reactionMask] = massSources_all[:, reactionMask]
 
@@ -1959,7 +2049,8 @@ class solver:
             dOmega_dYk = dOmega_dC * dCk_dYk
             self.massSourcesDerivative[k, reactionMask] = dOmega_dYk[reactionMask]
 
-        heatReactionSource = self.reaction.reactionHeatSource(T, (rateForward, rateBackward))
+        deltaHrxn = self.reaction.enthalpyReactionChange(T)
+        heatReactionSource = -net_rate * deltaHrxn
         dQ_dT = self.reaction.reactionHeatSourceDerivative(T, (rateForward, rateBackward))
 
         heatReactionSource[near_eq] = 0.0
@@ -1969,17 +2060,26 @@ class solver:
         self.heatReactionSourcesDerivative[reactionMask] = dQ_dT[reactionMask]
 
         self.heatReactionSources = (
-            (1.0 - underRelaxationFactorHeatSource) * heat_rxn_old + underRelaxationFactorHeatSource * self.heatReactionSources
+            (1.0 - underRelaxationFactorHeatSource) * heat_rxn_old
+            + underRelaxationFactorHeatSource * self.heatReactionSources
         )
         self.heatReactionSourcesDerivative = (
-            (1.0 - underRelaxationFactorHeatSource) * heatd_rxn_old + underRelaxationFactorHeatSource * self.heatReactionSourcesDerivative
+            (1.0 - underRelaxationFactorHeatSource) * heatd_rxn_old
+            + underRelaxationFactorHeatSource * self.heatReactionSourcesDerivative
         )
 
         self.heatSources += self.heatReactionSources
         self.heatSourcesDerivative[:] = self.heatReactionSourcesDerivative
 
-        self.massSources = (1.0 - underRelaxationFactorMassSource) * mass_old + underRelaxationFactorMassSource * self.massSources
-        self.massSourcesDerivative = (1.0 - underRelaxationFactorMassSource) * massd_old + underRelaxationFactorMassSource * self.massSourcesDerivative
+        self.massSources = (
+            (1.0 - underRelaxationFactorMassSource) * mass_old
+            + underRelaxationFactorMassSource * self.massSources
+        )
+        self.massSourcesDerivative = (
+            (1.0 - underRelaxationFactorMassSource) * massd_old
+            + underRelaxationFactorMassSource * self.massSourcesDerivative
+        )
+
 
     def matrixSpecieEquationAssembly(self, specieIndex: int):
         n = self.mesh.n_cells
@@ -2084,7 +2184,7 @@ class solver:
         self.temperatureField.cellField[:] = float(inletTemperature)
         self.update_density()
 
-    def steadyState(self, max_iter: int,
+    def steadyState(self, maxiter: int,
                     relaxationFactorSpecie: float = 0.4,
                     relaxationFactorTemperature: float = 0.4,
                     convergenceCriteria: float = 1e-6,
@@ -2098,7 +2198,7 @@ class solver:
         
         self.sourcesEvaluation()
 
-        for it in range(max_iter):
+        for it in range(maxiter):
             Y_old = self.specieFields.copy()
             T_old = self.temperatureField.cellField.copy()
 
@@ -2131,7 +2231,7 @@ class solver:
             scaleddY = dY / max(self.massFlux, 1e-10)
             scaleddT = dT / max(np.mean(self.temperatureField.cellField), 1.0)
 
-            if it % 10 == 0 or it == max_iter - 1:
+            if it % 10 == 0 or it == maxiter - 1:
                 print(f"Iter {it:04d} | Max scaled dY: {scaleddY:.2e} | Max scaled dT: {scaleddT:.2e}")
                 print(f"          | Outlet Temp: {self.temperatureField.cellField[-1]:.2f} K")
                 print(f"          | Outlet Y: {self.specieFields[:, -1]}")
@@ -2142,18 +2242,11 @@ class solver:
 
         self.outlet = Outlet.fromSolver(self)
         return self.outlet
-
 class ReactorPlotter:
     def __init__(self, solver):
-        """
-        solver: object holding mesh, species, temperatureField, specieFields
-        """
         self.solver = solver
 
     def get_axis(self):
-        """
-        Return axial coordinate. Adjust if you use a different name.
-        """
         mesh = self.solver.mesh
         if hasattr(mesh, "cell_centers"):
             return mesh.cell_centers
@@ -2162,59 +2255,100 @@ class ReactorPlotter:
             z_edges = np.concatenate(([0.0], np.cumsum(lengths)))
             return 0.5 * (z_edges[:-1] + z_edges[1:])
 
-    def plot_temperature(self, show=True, ax=None):
+    def save_temperature(self, path):
         z = self.get_axis()
         T = self.solver.temperatureField.cellField
 
-        if ax is None:
-            fig, ax = plt.subplots(figsize=(8, 4))
-
-        ax.plot(z, T, color="red", label="Temperature")
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(z, T, color="red", lw=2, label="Temperature")
         ax.set_xlabel("Axial position z [m]")
         ax.set_ylabel("Temperature [K]")
-        ax.grid(True)
+        ax.grid(True, alpha=0.3)
         ax.legend()
-        
-        if show and ax is None:
-            plt.tight_layout()
-            plt.show()
+        fig.tight_layout()
+        fig.savefig(path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
 
-    def plot_species(self, show=True, ax=None):
+    def save_species(self, path):
         z = self.get_axis()
         Y = self.solver.specieFields
 
-        if ax is None:
-            fig, ax = plt.subplots(figsize=(8, 4))
-
+        fig, ax = plt.subplots(figsize=(8, 4))
         for i, sp in enumerate(self.solver.reaction.species):
-            ax.plot(z, Y[i, :], label=sp.name)
-
+            ax.plot(z, Y[i, :], lw=2, label=sp.name)
         ax.set_xlabel("Axial position z [m]")
         ax.set_ylabel("Mass fraction [-]")
-        ax.grid(True)
+        ax.grid(True, alpha=0.3)
         ax.legend()
-        
-        if show and ax is None:
-            plt.tight_layout()
-            plt.show()
+        fig.tight_layout()
+        fig.savefig(path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
 
-    def plot_all(self):
-        """
-        Convenience method: two subplots in one figure.
-        """
+    def save_all(self, path):
         z = self.get_axis()
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), sharex=True)
-        ax1.plot(z, self.solver.temperatureField.cellField, color="red")
+
+        ax1.plot(z, self.solver.temperatureField.cellField, color="red", lw=2)
         ax1.set_xlabel("z [m]")
         ax1.set_ylabel("T [K]")
-        ax1.grid(True)
+        ax1.grid(True, alpha=0.3)
 
         for i, sp in enumerate(self.solver.reaction.species):
-            ax2.plot(z, self.solver.specieFields[i, :], label=sp.name)
+            ax2.plot(z, self.solver.specieFields[i, :], lw=2, label=sp.name)
         ax2.set_xlabel("z [m]")
         ax2.set_ylabel("Y_i [-]")
-        ax2.grid(True)
+        ax2.grid(True, alpha=0.3)
         ax2.legend()
 
-        plt.tight_layout()
-        plt.show()
+        fig.tight_layout()
+        fig.savefig(path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        
+def build_reactor_from_context(case_ctx):
+    chemistry = case_ctx["chemistry"]
+    mesh_cfg = case_ctx["mesh"]
+    inlet_cfg = case_ctx["inlet"]
+    
+    Specie.counter = 0
+    Zone.counter = 0
+
+    species = [
+        Specie.from_dict(name, cfg)
+        for name, cfg in chemistry["species"].items()
+    ]
+
+    reaction_items = list(chemistry["reactions"].items())
+    if len(reaction_items) != 1:
+        raise ValueError("Exactly one reaction is currently supported")
+    reaction_name, reaction_cfg = reaction_items[0]
+    reaction = Reaction.from_dict(reaction_name, reaction_cfg, species)
+
+    mixture = Mixture.from_dict(chemistry["mixture"], species)
+
+    domain = domainSetup(
+        diameter=float(inlet_cfg["diameter"])
+    )
+
+    zones = [
+        Zone.from_dict(name, cfg)
+        for name, cfg in mesh_cfg["zones"].items()
+    ]
+
+    mesh = Mesh.from_dict(mesh_cfg, domain, zones)
+    inlet = Inlet.from_dict(inlet_cfg, species)
+
+    specie_fields = []
+    for sp in species:
+        fld = scalarField(f"Y_{sp.name}", "specie")
+        fld.fieldInitialize(mesh)
+        specie_fields.append(fld)
+
+    slv = solver(
+        mesh=mesh,
+        mixture=mixture,
+        reaction=reaction,
+        specieFields=specie_fields,
+        inlet=inlet,
+    )
+
+    return slv, species
