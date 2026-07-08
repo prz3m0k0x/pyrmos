@@ -1,4 +1,6 @@
-# SO2 Reactor Simulation & PSO Optimization Framework
+# pyRMOS - Python - Reaktory Metodą Objętości Skończonych
+
+Which loosely translates to reactotors simulated with FVM (Finite Volume Method) in Python. A result of a hobby project in writing primitive CFD solvers for educational purposes :)
 
 A YAML-configurable, 1D finite-volume reactor solver for multi-reaction gas-phase chemistry, coupled to a multi-objective Particle Swarm Optimizer (PSO) for design/operating-point optimization. Built around a canonical use case — steady-state SO2 → SO3 conversion in a catalytic reactor — but structured generically enough to support arbitrary species, multi-step reaction networks, and multiple simultaneous optimization objectives.
 
