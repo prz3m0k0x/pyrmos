@@ -19,18 +19,18 @@ The evaluator supports these binary operations: [conversation_history:1]
 
 | AST node | Symbol | Python operator |
 | --- | --- | --- |
-| `ast.Add` | `+` | `operator.add` [conversation_history:1] |
-| `ast.Sub` | `-` | `operator.sub` [conversation_history:1] |
-| `ast.Mult` | `*` | `operator.mul` [conversation_history:1] |
-| `ast.Div` | `/` | `operator.truediv` [conversation_history:1] |
-| `ast.Pow` | `**` | `operator.pow` [conversation_history:1] |
+| `ast.Add` | `+` | `operator.add` |
+| `ast.Sub` | `-` | `operator.sub` |
+| `ast.Mult` | `*` | `operator.mul` |
+| `ast.Div` | `/` | `operator.truediv` |
+| `ast.Pow` | `**` | `operator.pow` |
 
 The evaluator supports these unary operations: [conversation_history:1]
 
 | AST node | Symbol | Python operator |
 | --- | --- | --- |
-| `ast.UAdd` | unary `+` | `operator.pos` [conversation_history:1] |
-| `ast.USub` | unary `-` | `operator.neg` [conversation_history:1] |
+| `ast.UAdd` | unary `+` | `operator.pos` |
+| `ast.USub` | unary `-` | `operator.neg` |
 
 No function calls, indexing, comprehensions, boolean logic, comparisons, lambdas, or statements are supported by this implementation. Any unsupported node type raises `TypeError`. [conversation_history:1]
 
@@ -163,13 +163,13 @@ The class raises standard Python exceptions with explicit messages: [conversatio
 
 | Situation | Exception |
 | --- | --- |
-| Unsupported constant type | `TypeError` [conversation_history:1] |
-| Unsupported binary operator | `TypeError` [conversation_history:1] |
-| Unsupported unary operator | `TypeError` [conversation_history:1] |
-| Unsupported AST syntax | `TypeError` [conversation_history:1] |
-| Missing top-level name | `KeyError` [conversation_history:1] |
-| Invalid dotted-path structure | `TypeError` [conversation_history:1] |
-| Missing path element or non-dict traversal | `KeyError` [conversation_history:1] |
+| Unsupported constant type | `TypeError` |
+| Unsupported binary operator | `TypeError` |
+| Unsupported unary operator | `TypeError` |
+| Unsupported AST syntax | `TypeError` |
+| Missing top-level name | `KeyError` |
+| Invalid dotted-path structure | `TypeError` |
+| Missing path element or non-dict traversal | `KeyError` |
 
 Because parsing happens in `__init__`, malformed expression syntax would also cause `ast.parse(...)` to raise a `SyntaxError` during object creation. [conversation_history:1]
 
@@ -211,10 +211,10 @@ value = expr.value(ctx)
 
 | Item | Purpose |
 | --- | --- |
-| `_ALLOWED_BINOPS` | Defines the accepted binary arithmetic operators. [conversation_history:1] |
-| `_ALLOWED_UNARYOPS` | Defines the accepted unary arithmetic operators. [conversation_history:1] |
-| `UserExpression.__init__()` | Stores and parses the expression string. [conversation_history:1] |
-| `UserExpression.value()` | Evaluates the expression and returns `float`. [conversation_history:1] |
-| `UserExpression._eval_node()` | Recursive AST evaluator. [conversation_history:1] |
-| `UserExpression._resolve_name()` | Resolves top-level names from context. [conversation_history:1] |
-| `UserExpression._resolve_attribute_chain()` | Resolves dotted dictionary paths from context. [conversation_history:1] |
+| `_ALLOWED_BINOPS` | Defines the accepted binary arithmetic operators. |
+| `_ALLOWED_UNARYOPS` | Defines the accepted unary arithmetic operators. |
+| `UserExpression.__init__()` | Stores and parses the expression string. |
+| `UserExpression.value()` | Evaluates the expression and returns `float`. |
+| `UserExpression._eval_node()` | Recursive AST evaluator. |
+| `UserExpression._resolve_name()` | Resolves top-level names from context. |
+| `UserExpression._resolve_attribute_chain()` | Resolves dotted dictionary paths from context. |
